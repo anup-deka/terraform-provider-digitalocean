@@ -2,6 +2,7 @@ package genai
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/digitalocean/godo"
@@ -68,18 +69,33 @@ func ResourceDigitalOceanGenAI() *schema.Resource {
 func resourceDigitalOceanGenAICreate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
 	client := meta.(*config.CombinedConfig).GodoClient()
 	createRequest := &godo.FunctionRouteCreateRequest{}
+
 	if a, err := d.Get("agent_uuid").(string); err {
 		createRequest.AgentUuid = a
 	} else {
 		return diag.FromErr(fmt.Errorf("agent_uuid is required"))
 	}
+
 	createRequest.Description = d.Get("description").(string)
 	createRequest.FaasName = d.Get("faas_name").(string)
 	createRequest.FaasNamespace = d.Get("faas_namespace").(string)
+
+	// Parse input_schema JSON string into FunctionInputSchema struct.
 	inputSchemaStr := d.Get("input_schema").(string)
-	createRequest.InputSchema = []byte(inputSchemaStr)
+	var inputSchema godo.FunctionInputSchema
+	if err := json.Unmarshal([]byte(inputSchemaStr), &inputSchema); err != nil {
+		return diag.FromErr(fmt.Errorf("failed to parse input_schema: %s", err))
+	}
+	createRequest.InputSchema = inputSchema
+
+	// Optionally validate output_schema JSON. Since it is a json.RawMessage, we'll check its validity.
 	outputSchemaStr := d.Get("output_schema").(string)
+	var tmp json.RawMessage
+	if err := json.Unmarshal([]byte(outputSchemaStr), &tmp); err != nil {
+		return diag.FromErr(fmt.Errorf("failed to parse output_schema: %s", err))
+	}
 	createRequest.OutputSchema = []byte(outputSchemaStr)
+
 	createRequest.FunctionName = d.Get("function_name").(string)
 	agent, resp, err := client.GenAI.CreateFunctionRoute(context.Background(), createRequest.AgentUuid, createRequest)
 	if err != nil {
@@ -88,7 +104,7 @@ func resourceDigitalOceanGenAICreate(ctx context.Context, d *schema.ResourceData
 		}
 		return diag.FromErr(fmt.Errorf("error creating GenAI resource: %s", err))
 	}
-	fmt.Println("Function check")
+
 	for _, function := range agent.Functions {
 		if function.Name == createRequest.FunctionName {
 			fmt.Println("Function found:", function.Name)
@@ -130,28 +146,46 @@ func resourceDigitalOceanGenAIDelete(ctx context.Context, d *schema.ResourceData
 func resourceDigitalOceanGenAIUpdate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
 	client := meta.(*config.CombinedConfig).GodoClient()
 	agentUuid := d.Get("agent_uuid").(string)
+
 	if agentUuid == "" {
 		return diag.FromErr(fmt.Errorf("agent_uuid is required for deletion"))
 	}
+
 	updateRequest := &godo.FunctionRouteUpdateRequest{}
 	if d.HasChange("description") {
 		updateRequest.Description = d.Get("description").(string)
 	}
+
 	if d.HasChange("faas_name") {
 		updateRequest.FaasName = d.Get("faas_name").(string)
 	}
+
 	if d.HasChange("faas_namespace") {
 		updateRequest.FaasNamespace = d.Get("faas_namespace").(string)
 	}
+
 	if d.HasChange("input_schema") {
-		updateRequest.InputSchema = []byte(d.Get("input_schema").(string))
+		inputSchemaStr := d.Get("input_schema").(string)
+		var inputSchema godo.FunctionInputSchema
+		if err := json.Unmarshal([]byte(inputSchemaStr), &inputSchema); err != nil {
+			return diag.FromErr(fmt.Errorf("failed to parse input_schema: %s", err))
+		}
+		updateRequest.InputSchema = inputSchema
 	}
+
 	if d.HasChange("output_schema") {
-		updateRequest.OutputSchema = []byte(d.Get("output_schema").(string))
+		outputSchemaStr := d.Get("output_schema").(string)
+		var tmp json.RawMessage
+		if err := json.Unmarshal([]byte(outputSchemaStr), &tmp); err != nil {
+			return diag.FromErr(fmt.Errorf("failed to parse output_schema: %s", err))
+		}
+		updateRequest.OutputSchema = []byte(outputSchemaStr)
 	}
+
 	if d.HasChange("function_name") {
 		updateRequest.FunctionName = d.Get("function_name").(string)
 	}
+
 	updateRequest.FunctionUuid = d.Get("function_uuid").(string)
 
 	agent, resp, err := client.GenAI.UpdateFunctionRoute(context.Background(), agentUuid, updateRequest.FunctionUuid, updateRequest)
@@ -183,6 +217,9 @@ func resourceDigitalOceanGenAIRead(ctx context.Context, d *schema.ResourceData, 
 	}
 
 	d.SetId(agent.Uuid)
+	d.Set("created_at", agent.CreatedAt)
+	d.Set("agent_uuid", agent.Uuid)
+	d.Set("agent_name", agent.Name)
 	// d.Set("description", agent.AgentFunction[0].Description)
 	// d.Set("faas_name", agent.AgentFunction[0].FaasName)
 	// d.Set("faas_namespace", agent.FaasNamespace)
